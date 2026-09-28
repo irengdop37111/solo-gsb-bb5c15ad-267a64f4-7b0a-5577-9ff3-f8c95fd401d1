@@ -567,6 +567,30 @@ table.review-exc { width: 100%; margin: 8px 0 0; }
 .delay-box .detail-head { padding: 2px 14px 6px; }
 .delay-box table.seg-checks { margin-top: 6px; }
 
+/* ---------- 送达站序规划 ---------- */
+#deliveryView { margin-top: 26px; border-top: 1px dashed var(--line); padding-top: 6px; }
+#deliveryView h3 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.delivery-hint { font-size: 12px; margin: 2px 0 10px; }
+.station-head-btns { display: flex; gap: 8px; }
+.btn-delivery { margin-top: 10px; }
+.delivery-matrix-wrap { overflow-x: auto; }
+table.delivery-matrix { border-collapse: collapse; font-size: 12.5px; }
+table.delivery-matrix th, table.delivery-matrix td {
+  border: 1px solid var(--line);
+  padding: 3px 6px;
+  text-align: center;
+  white-space: nowrap;
+}
+table.delivery-matrix thead th, table.delivery-matrix tbody th {
+  background: #eef3f8;
+  font-weight: 600;
+}
+table.delivery-matrix .dm-corner { min-width: 150px; text-align: left; }
+table.delivery-matrix input { width: 72px; text-align: right; }
+table.delivery-matrix td.dm-diag input { background: #f3f5f7; color: var(--muted); }
+.delivery-stop .items { margin: 6px 14px 0; }
+.delivery-batches { margin: 6px 14px 0; font-size: 12.5px; }
+
 /* ---------- 到货交接台账 ---------- */
 #handoverView { margin-top: 26px; border-top: 1px dashed var(--line); padding-top: 6px; }
 #handoverView h3 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

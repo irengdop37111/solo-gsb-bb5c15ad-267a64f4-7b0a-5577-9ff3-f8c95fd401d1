@@ -209,6 +209,22 @@ APP_PORT=9000 docker compose up -d --build
      违规行与原因；
    - 每条有效记录可点击 **「撤销」**；若撤销会导致后续记录越界，则拒绝
      撤销并指出冲突记录（需先撤销其后的冲突记录）。
+10. 生成 **全员可运输** 方案后，在结果页 **送达站序规划** 区维护
+    **送达站点**（1～8 个：名称可选、可签收时间窗开始/结束、卸货耗时）、
+    为每个批次选择 **送达站点**，并在 **有向行车时长矩阵** 中填写
+    仓库→站、站→站、站→仓库的小时数（双向可不对称），点击
+    **「🚚 规划送达站序」**：
+    - 服务端按快照 **重新核对箱号、批次与件数**，穷举全部站序：抵站过早
+      自动等待至窗口开始，卸货须在窗口结束前完成，最后一站卸毕不得超过
+      方案运输总时长；
+    - 结果给出 **最优站序**（最终卸毕最早；并列按输入站号字典序最小）、
+      候选/可行站序计数，以及 **逐站抵达 / 等待 / 卸毕时刻** 与该站
+      **箱号、批次、件数** 明细（含各箱明细与按批汇总）；
+    - **无可行站序** 时明确报错并指出不可行原因（时间窗或总时长），
+      不展示部分路线；
+    - 站序规划绑定 **生成方案时的输入快照**（响应含快照指纹）；修改任意
+      规划输入后结果区出现 **「已过期」** 标记并禁用规划按钮，重新生成
+      方案后站点与归属表按新方案重建、即可再次规划。
 
 ## 五、规划规则
 
@@ -518,7 +534,150 @@ curl http://localhost:8000/api/handover-orders/1
 | `summary` | 箱数、明细项数、应交/净签收/待交总件数、记录总数/有效数/已撤销数 |
 | 撤销 409 响应 `conflicts[]` | 冲突记录明细:`record_id`、`kind`、`box_no`、`batch_no`、`units`、`resulting_net`(重放后越界的净签收量)、`due_units` |
 
-## 十、接口示例
+## 十、送达站序规划规则
+
+针对已生成的 **全员可运输装箱方案**，在结果页（或直接调用 HTTP API）为
+每个货物批次指定 **一个送达站点**，并填写各站 **可签收时间窗、卸货耗时**
+与 **有向行车时长**：
+
+- 请求体携带 **生成方案时的输入快照**（`plan_input`，与 `/api/plan`
+  请求体相同）、`stations`（1～8 个站点）、`batch_assignments`（每个货物
+  批次恰好一条）与 `travel_times`（**有向行车时长矩阵**）；
+- **按快照重新核对**：服务端按 `plan_input` 重新规划，仅在
+  **全部批次已装载且每箱全程可运输** 的方案上规划站序，逐箱逐批复核
+  箱号、批号与件数（响应中各站的箱号 / 批次 / 件数全部来自该方案明细，
+  同批分拆多箱时按箱分别列出、件数在各批维度汇总）；方案不是全员可运输
+  （或没有任何已装箱货物）时返回 400；
+- **输入校验**：站点数必须为 1～8；`batch_assignments` 中全部批次必须
+  **恰好归属一站**（缺批、重复批号、批号/站号越界均返回 400）；各站
+  时间窗开始/结束与卸货耗时、矩阵中的行车时长均须为 **非负有限数**，
+  **窗口结束不得早于开始**；`travel_times` 必须为 **(站点数+1) 阶方阵**，
+  行列顺序均为 `仓库、站点1、站点2、…`，`travel_times[i][j]` 为从 i 到 j
+  的有向时长（**双向允许不对称**；对角线单元格不参与计算，但仍须为
+  合法非负数）；
+- **时刻推演**（时间单位均为小时，**以出库时刻为 0**）：从仓库出发，
+  沿站序逐站行驶（仓库→首站、站→站）；**抵站时刻早于窗口开始时必须
+  等待** 至窗口开始再卸货；**卸货必须在窗口结束前完成**（恰在边界完成
+  允许），否则该站序不可行；
+- **总时长约束**：**最后一站卸毕时刻不得超过方案运输总时长**
+ （`summary.transport_hours`，恰等允许），否则该站序不可行；
+- **搜索全部可行站序**（站点的全排列，没有分配货物的空站也必须抵达）：
+  取 **最终卸毕时刻最早** 者；最终卸毕时刻并列时，取 **按输入站点序号
+  组成的字典序最小** 者；响应同时给出候选/可行站序数及因时间窗、因总
+  时长不可行的站序计数；
+- **无可行站序时返回 400**：错误信息说明是时间窗无法完成卸货还是最后
+  一站卸毕超过运输总时长，**不返回任何部分路线**；
+- 响应逐站（`route.stops[]`）返回 **抵达、等待、开始卸货、卸毕时刻**，
+  以及该站 **箱号、批次与件数**（`box_nos` / `boxes[].items` /
+  `batches[]` / `total_units`）；并携带输入快照的 SHA-256 指纹
+  （`input_fingerprint`），输入变化后前端将旧结果标记为 **已过期**，
+  需重新生成方案后再规划。
+
+### 送达站序规划接口示例
+
+```bash
+# plan_input 与 /api/plan 请求体相同;travel_times 行列序:仓库、站点1、站点2
+curl -X POST http://localhost:8000/api/delivery-route \
+  -H "Content-Type: application/json" \
+  -d '{
+    "plan_input": {
+      "transport_hours": 24, "box_capacity": 12,
+      "zones": [{"name": "冷藏区", "t_min": 0, "t_max": 8}],
+      "cargoes": [
+        {"name": "鲜奶", "units": 40, "unit_volume": 0.25, "t_min": 2, "t_max": 6},
+        {"name": "三文鱼", "units": 10, "unit_volume": 0.4, "t_min": 0, "t_max": 4}
+      ]
+    },
+    "stations": [
+      {"name": "城东仓配站", "window_start": 6, "window_end": 14, "unload_hours": 1},
+      {"name": "城西商超站", "window_start": 8, "window_end": 20, "unload_hours": 1.5}
+    ],
+    "batch_assignments": [
+      {"batch_no": 1, "station_no": 1},
+      {"batch_no": 2, "station_no": 2}
+    ],
+    "travel_times": [
+      [0, 4, 9],
+      [0, 0, 2],
+      [0, 6, 0]
+    ]
+  }'
+```
+
+站序 `1→2`：0 点出库，4 点抵达站点 1 等待至 6 点卸货、7 点卸毕；行驶 2h
+于 9 点抵达站点 2（窗口 8 点开始，无需等待），10.5 点卸毕，早于运输总
+时长 24h。响应（节选）：
+
+```json
+{
+  "input_fingerprint": "…",
+  "transport_hours": 24.0,
+  "stations": [
+    {"station_no": 1, "name": "城东仓配站", "window_start": 6.0, "window_end": 14.0, "unload_hours": 1.0},
+    {"station_no": 2, "name": "城西商超站", "window_start": 8.0, "window_end": 20.0, "unload_hours": 1.5}
+  ],
+  "batch_assignments": [
+    {"batch_no": 1, "name": "鲜奶", "units": 40, "station_no": 1, "station_name": "城东仓配站"},
+    {"batch_no": 2, "name": "三文鱼", "units": 10, "station_no": 2, "station_name": "城西商超站"}
+  ],
+  "route": {
+    "station_sequence": [1, 2],
+    "depart_hours": 0.0,
+    "final_finish_hours": 10.5,
+    "total_travel_hours": 6.0,
+    "total_wait_hours": 2.0,
+    "total_unload_hours": 2.5,
+    "stops": [
+      {"stop_no": 1, "station_no": 1, "name": "城东仓配站",
+       "arrival_hours": 4.0, "wait_hours": 2.0,
+       "unload_start_hours": 6.0, "finish_hours": 7.0,
+       "box_nos": [1, 2], "total_units": 40,
+       "boxes": [
+         {"box_no": 1, "items": [{"box_no": 1, "batch_no": 1, "name": "鲜奶", "units": 32}]},
+         {"box_no": 2, "items": [{"box_no": 2, "batch_no": 1, "name": "鲜奶", "units": 8}]}
+       ],
+       "batches": [{"batch_no": 1, "name": "鲜奶", "units": 40}]},
+      {"stop_no": 2, "station_no": 2, "name": "城西商超站",
+       "arrival_hours": 9.0, "wait_hours": 0.0,
+       "unload_start_hours": 9.0, "finish_hours": 10.5,
+       "box_nos": [1], "total_units": 10,
+       "boxes": [
+         {"box_no": 1, "items": [{"box_no": 1, "batch_no": 2, "name": "三文鱼", "units": 10}]}
+       ],
+       "batches": [{"batch_no": 2, "name": "三文鱼", "units": 10}]}
+    ]
+  },
+  "summary": {
+    "station_count": 2, "box_count": 2, "batch_count": 2, "total_units": 50,
+    "candidate_permutations": 2, "feasible_permutations": 2,
+    "infeasible_window_permutations": 0, "infeasible_overtime_permutations": 0,
+    "final_finish_hours": 10.5, "within_transport_hours": true
+  }
+}
+```
+
+若所有站序都无法满足约束，返回 **400** 且不携带 `route`：
+
+```json
+{"detail": "送达站序无可行解:已穷举全部 2 种站序,无可行站序、2 种站序虽能在时间窗内卸完,但最后一站卸毕时刻超过方案运输总时长 24.0h;请放宽时间窗、调整卸货耗时、行车时长或批次归属后重试,不返回部分路线"}
+```
+
+### 送达站序规划响应字段
+
+| 字段 | 说明 |
+| --- | --- |
+| `transport_hours` | 方案运输总时长(站序的最终卸毕时刻不得超过它) |
+| `stations[]` | 回显各站站号、名称与时间窗 / 卸货耗时 |
+| `travel_times` | 回显有向行车时长矩阵 |
+| `batch_assignments[]` | 批次到站归属回显,附方案中的批次件数与站点名称 |
+| `route.station_sequence` | 最优站序(输入站号序列):最终卸毕最早;并列取字典序最小 |
+| `route.stops[]` | 逐站:`stop_no`(停靠顺序)、`station_no`、时间窗与卸货耗时、`arrival_hours`(抵达)、`wait_hours`(等待)、`unload_start_hours`(开始卸货)、`finish_hours`(卸毕) |
+| `route.stops[].box_nos` / `boxes[]` / `batches[]` / `total_units` | 该站对应箱号、按箱展开的箱号·批号·件数明细、按批汇总件数与总件数(空站为空) |
+| `route.final_finish_hours` / `total_travel_hours` / `total_wait_hours` / `total_unload_hours` | 最后一站卸毕时刻与全程行驶 / 等待 / 卸货合计 |
+| `summary.candidate_permutations` / `feasible_permutations` | 穷举的站序总数与可行站序数 |
+| `summary.infeasible_window_permutations` / `infeasible_overtime_permutations` | 因卸货超时间窗 / 因最后卸毕超运输总时长而不可行的站序数 |
+
+## 十一、接口示例
 
 ### 单一温区模式（兼容原有调用）
 
@@ -942,7 +1101,7 @@ curl -X POST http://localhost:8000/api/temperature-review \
 }
 ```
 
-## 十一、项目结构
+## 十二、项目结构
 
 ```
 .
@@ -952,6 +1111,7 @@ curl -X POST http://localhost:8000/api/temperature-review \
 │   ├── resilience.py  # 单温区故障容灾评估(逐温区模拟失效并重规划)
 │   ├── review.py      # 实测温度复核(CSV 校验、仪器误差带、确定/可能超界切段、度时上下界积分)
 │   ├── delay.py       # 运输延误推演(段时长增加后重算逐段设定点与各批累计度时,逐箱对比)
+│   ├── delivery.py    # 送达站序规划(时间窗/卸货/有向行车时长,穷举站序取最早卸毕+字典序)
 │   ├── handover.py    # 到货交接台账(交接单冻结、多行签收/退回整笔入账、撤销重放校验)
 │   ├── db.py          # SQLite 连接与建表(WAL、外键、显式事务)
 │   └── schemas.py     # 请求模型
@@ -961,7 +1121,8 @@ curl -X POST http://localhost:8000/api/temperature-review \
 │   └── app.js
 ├── tests/
 │   ├── test_handover.py  # 台账 API 测试(python tests/test_handover.py)
-│   └── test_delay.py     # 延误推演测试(python tests/test_delay.py)
+│   ├── test_delay.py     # 延误推演测试(python tests/test_delay.py)
+│   └── test_delivery.py  # 送达站序规划测试(python tests/test_delivery.py)
 ├── Dockerfile
 ├── docker-compose.yml # 含 SQLite 初始化与 handover-data 持久化卷
 ├── .env.example

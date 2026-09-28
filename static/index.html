@@ -156,6 +156,65 @@
           <div id="delayResult"></div>
           <div id="delayError" class="error-box" hidden></div>
         </div>
+
+        <!-- ============ 送达站序规划 ============ -->
+        <div id="deliveryView" hidden>
+          <h3>送达站序规划
+            <span id="deliveryStale" class="stale-badge" hidden>⚠ 输入已变化,站序规划结果已过期,请重新生成方案</span>
+          </h3>
+          <p class="muted delivery-hint">
+            为每个货物批次指定一个送达站点(1~8 个),填写各站可签收时间窗、卸货耗时与
+            仓库/站点间的有向行车时长(h);系统按方案快照重新核对箱号、批次与件数,
+            穷举全部站序(抵站过早须等待,卸货须在窗口结束前完成,最后一站卸毕不超过
+            方案运输总时长),取最终卸毕最早、并列时按站号字典序最小者。
+          </p>
+          <div class="section-head">
+            <h4 class="handover-sub">送达站点
+              <small class="muted">时间均以出库时刻为 0(小时)</small>
+            </h4>
+            <div class="station-head-btns">
+              <button id="btnAddStation" type="button" class="btn btn-small">+ 添加站点</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="editable">
+              <thead>
+                <tr>
+                  <th>站号</th><th>站点名称(可选)</th>
+                  <th>窗口开始 h</th><th>窗口结束 h</th><th>卸货耗时 h</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="deliveryStationRows"></tbody>
+            </table>
+          </div>
+
+          <div class="section-head">
+            <h4 class="handover-sub">批次送达站点
+              <small class="muted">每个批次恰好归属一站</small>
+            </h4>
+          </div>
+          <div class="table-wrap">
+            <table class="editable">
+              <thead>
+                <tr><th>批号</th><th>批次</th><th class="num">件数</th><th>送达站点</th><th></th></tr>
+              </thead>
+              <tbody id="deliveryAssignRows"></tbody>
+            </table>
+          </div>
+
+          <div class="section-head">
+            <h4 class="handover-sub">有向行车时长 (h)
+              <small class="muted">行 = 出发地,列 = 目的地;仓库→站、站→站、站→仓库均可分别填写</small>
+            </h4>
+          </div>
+          <div class="table-wrap delivery-matrix-wrap">
+            <table class="delivery-matrix" id="deliveryMatrix"></table>
+          </div>
+
+          <button id="btnDelivery" type="button" class="btn btn-small btn-delivery">🚚 规划送达站序</button>
+          <div id="deliveryResult"></div>
+          <div id="deliveryError" class="error-box" hidden></div>
+        </div>
       </div>
 
       <!-- ============ 单温区故障容灾评估 ============ -->

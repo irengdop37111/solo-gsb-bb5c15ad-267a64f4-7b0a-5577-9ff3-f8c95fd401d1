@@ -511,6 +511,9 @@ async function runPlan() {
       delaySnapshot = null;
       $("delayResult").innerHTML = "";
     }
+    /* 旧站序规划结果同样随输入变化作废,站点/归属/行车时长编辑器按新方案重建 */
+    $("deliveryResult").innerHTML = "";
+    $("deliveryError").hidden = true;
     planSnapshot = newSnapshot;
     planData = data;
     renderResult(data);
@@ -535,6 +538,7 @@ function renderResult(data) {
   renderUnloaded(data.unloaded, data.volume_unit);
   setupReview(data);
   setupDelay(data);
+  setupDelivery(data);
 }
 
 /* 禁配装箱模式横幅:对称化禁配配对 + 箱号按首次出现编号 + 逐件箱号序列 */
@@ -1042,11 +1046,12 @@ function markAssessmentStale() {
   $("assessStale").hidden = cur === assessSnapshot;
 }
 
-/* 输入变化:旧评估/复核/推演结果标记为已过期(快照比对,恢复原始输入会自动撤销标记) */
+/* 输入变化:旧评估/复核/推演/站序结果标记为已过期(快照比对,恢复原始输入会自动撤销标记) */
 function markResultsStale() {
   markAssessmentStale();
   markReviewStale();
   markDelayStale();
+  markDeliveryStale();
 }
 document.querySelector(".input-panel").addEventListener("input", markResultsStale);
 document.querySelector(".input-panel").addEventListener("click", (e) => {
@@ -1623,6 +1628,341 @@ function markDelayStale() {
   $("btnDelay").disabled = stale;
   $("delaySegment").disabled = stale;
   $("delayHours").disabled = stale;
+}
+
+/* ---------------- 送达站序规划 ---------------- */
+/* 站序规划绑定生成方案时的输入快照;输入变化后旧结果过期,需重新生成方案。
+   站点/归属/行车时长编辑器属于站序规划自身的输入,修改不触发方案快照过期标记。 */
+let deliveryPlanData = null; // 最近一次全员可运输方案响应
+
+function deliveryTransportable(data) {
+  return data && data.summary.all_loaded && data.summary.all_transportable && data.boxes.length > 0;
+}
+
+function setupDelivery(data) {
+  const view = $("deliveryView");
+  deliveryPlanData = deliveryTransportable(data) ? data : null;
+  if (!deliveryPlanData) {
+    view.hidden = true;
+    $("deliveryStale").hidden = true;
+    $("deliveryResult").innerHTML = "";
+    return;
+  }
+  view.hidden = false;
+  /* 首次进入或当前没有任何站点行时,补两行默认站点 */
+  if (!$("deliveryStationRows").children.length) {
+    addDeliveryStationRow({ name: "", window_start: 0, window_end: 24, unload_hours: 1 });
+    addDeliveryStationRow({ name: "", window_start: 0, window_end: 24, unload_hours: 1 });
+  }
+  rebuildDeliveryAssignments(data);
+  rebuildDeliveryMatrix();
+}
+
+function addDeliveryStationRow(s = {}) {
+  const tbody = $("deliveryStationRows");
+  const no = tbody.children.length + 1;
+  if (no > 8) return;
+  const tr = document.createElement("tr");
+  tr.className = "station-row";
+  tr.innerHTML = `
+    <td class="num station-no">${no}</td>
+    <td><input class="st-name" type="text" value="${s.name ?? ""}" placeholder="站点 ${no}" /></td>
+    <td><input class="st-win-start" type="number" step="any" min="0" value="${s.window_start ?? 0}" /></td>
+    <td><input class="st-win-end" type="number" step="any" min="0" value="${s.window_end ?? 24}" /></td>
+    <td><input class="st-unload" type="number" step="any" min="0" value="${s.unload_hours ?? 1}" /></td>
+    <td><button type="button" class="btn btn-del btn-del-station">删除</button></td>`;
+  tbody.appendChild(tr);
+}
+
+function renumberDeliveryStations() {
+  [...$("deliveryStationRows").children].forEach((tr, i) => {
+    tr.querySelector(".station-no").textContent = i + 1;
+    const ph = tr.querySelector(".st-name").placeholder;
+    if (/^站点 \d+$/.test(ph)) tr.querySelector(".st-name").placeholder = `站点 ${i + 1}`;
+  });
+}
+
+/* 按当前方案重建批次→站点行;保留仍有效的既有选择,新批默认第 1 站 */
+function rebuildDeliveryAssignments(data) {
+  const oldVals = new Map();
+  [...$("deliveryAssignRows").querySelectorAll("tr")].forEach((tr) => {
+    oldVals.set(Number(tr.dataset.batch), Number(tr.querySelector(".as-station").value));
+  });
+  const stationCount = $("deliveryStationRows").children.length;
+  const tbody = $("deliveryAssignRows");
+  tbody.innerHTML = "";
+  data.boxes.forEach((box) => {
+    box.items.forEach((it) => {
+      /* 同批可能分拆多箱,归属按批维护,仅首次出现时建行 */
+      if ([...tbody.querySelectorAll("tr")].some((r) => Number(r.dataset.batch) === it.batch_no)) return;
+      const prev = oldVals.get(it.batch_no);
+      const val = prev >= 1 && prev <= stationCount ? prev : 1;
+      const tr = document.createElement("tr");
+      tr.dataset.batch = it.batch_no;
+      tr.innerHTML = `
+        <td class="num">#${it.batch_no}</td>
+        <td>${escapeHtml(it.name)}</td>
+        <td class="num as-units">${fmt(it.units)} 件</td>
+        <td><select class="as-station">${stationOptions(stationCount, val)}</select></td>`;
+      tbody.appendChild(tr);
+    });
+  });
+  /* 件数以方案全量为准(同批分拆多箱需合并) */
+  const totals = new Map();
+  data.boxes.forEach((b) => b.items.forEach((it) =>
+    totals.set(it.batch_no, (totals.get(it.batch_no) || 0) + it.units)));
+  [...tbody.querySelectorAll("tr")].forEach((tr) => {
+    const no = Number(tr.dataset.batch);
+    tr.querySelector(".as-units").textContent = `${fmt(totals.get(no) || 0)} 件`;
+  });
+}
+
+function stationOptions(n, selected) {
+  let html = "";
+  for (let i = 1; i <= n; i++) {
+    const row = $("deliveryStationRows").children[i - 1];
+    const name = row.querySelector(".st-name").value.trim() || `站点 ${i}`;
+    html += `<option value="${i}" ${i === selected ? "selected" : ""}>第 ${i} 站 · ${escapeHtml(name)}</option>`;
+  }
+  return html;
+}
+
+/* 刷新批次行下拉(增删站点或改名后),保留选择 */
+function refreshAssignmentSelects() {
+  if (!deliveryPlanData) return;
+  const n = $("deliveryStationRows").children.length;
+  [...$("deliveryAssignRows").querySelectorAll("select.as-station")].forEach((sel) => {
+    const kept = Number(sel.value);
+    sel.innerHTML = stationOptions(n, kept >= 1 && kept <= n ? kept : 1);
+  });
+}
+
+function locationLabels() {
+  return ["仓库", ...[...$("deliveryStationRows").children].map((tr, i) => {
+    const v = tr.querySelector(".st-name").value.trim();
+    return v || `站点 ${i + 1}`;
+  })];
+}
+
+/* 重建 (n+1)×(n+1) 行车时长矩阵;保留仍存在的格子数值,新格默认 0,对角线禁用 */
+function rebuildDeliveryMatrix() {
+  const old = [];
+  const oldTable = $("deliveryMatrix");
+  oldTable.querySelectorAll("tr").forEach((tr, i) => {
+    old.push([...tr.querySelectorAll("input")].map((inp) => inp.value));
+  });
+  const n = $("deliveryStationRows").children.length;
+  const labels = locationLabels();
+  let html = `<thead><tr><th class="dm-corner">行 出发 ↓ / 列 到达 →</th>${
+    labels.map((l) => `<th>${escapeHtml(l)}</th>`).join("")}</tr></thead><tbody>`;
+  for (let i = 0; i <= n; i++) {
+    html += `<tr><th>${escapeHtml(labels[i])}</th>`;
+    for (let j = 0; j <= n; j++) {
+      if (i === j) {
+        html += `<td class="dm-diag"><input type="number" disabled value="0" title="同一地点不行驶" /></td>`;
+      } else {
+        const v = old[i] && old[i][j] !== undefined && old[i][j] !== "" ? old[i][j] : 0;
+        html += `<td><input class="dm-cell" type="number" step="any" min="0" value="${v}" data-from="${i}" data-to="${j}" /></td>`;
+      }
+    }
+    html += "</tr>";
+  }
+  html += "</tbody>";
+  oldTable.innerHTML = html;
+}
+
+$("btnAddStation").addEventListener("click", () => {
+  if ($("deliveryStationRows").children.length >= 8) {
+    showDeliveryError("送达站点最多 8 个");
+    return;
+  }
+  addDeliveryStationRow();
+  refreshAssignmentSelects();
+  rebuildDeliveryMatrix();
+});
+
+$("deliveryStationRows").addEventListener("click", (e) => {
+  if (!e.target.classList.contains("btn-del-station")) return;
+  if ($("deliveryStationRows").children.length <= 1) {
+    showDeliveryError("至少保留 1 个送达站点");
+    return;
+  }
+  e.target.closest("tr").remove();
+  renumberDeliveryStations();
+  refreshAssignmentSelects();
+  rebuildDeliveryMatrix();
+});
+
+/* 改名后批次下拉中的站点名称同步刷新 */
+$("deliveryStationRows").addEventListener("input", (e) => {
+  if (e.target.classList.contains("st-name")) refreshAssignmentSelects();
+});
+
+function nonNegNum(raw, label) {
+  const v = Number(raw);
+  if (raw === "" || !Number.isFinite(v)) throw new Error(`${label}必须填写有限数值`);
+  if (v < 0) throw new Error(`${label}必须为非负数,实际为 ${raw}`);
+  return v;
+}
+
+function collectDeliveryPayload() {
+  if (!planSnapshot) throw new Error("请先生成分箱方案");
+  if (!deliveryPlanData) throw new Error("当前方案不是全员可运输方案,无法规划送达站序");
+  const stationRows = [...$("deliveryStationRows").querySelectorAll("tr")];
+  const n = stationRows.length;
+  if (n < 1 || n > 8) throw new Error("送达站点数量须为 1~8 个");
+  const stations = stationRows.map((tr, i) => {
+    const name = tr.querySelector(".st-name").value.trim();
+    const winStart = nonNegNum(tr.querySelector(".st-win-start").value, `站点 ${i + 1} 的时间窗开始`);
+    const winEnd = nonNegNum(tr.querySelector(".st-win-end").value, `站点 ${i + 1} 的时间窗结束`);
+    if (winEnd < winStart) throw new Error(`站点 ${i + 1} 的时间窗结束不得早于开始`);
+    const unload = nonNegNum(tr.querySelector(".st-unload").value, `站点 ${i + 1} 的卸货耗时`);
+    return { name: name || null, window_start: winStart, window_end: winEnd, unload_hours: unload };
+  });
+  const assignRows = [...$("deliveryAssignRows").querySelectorAll("tr")];
+  const expected = new Set(
+    deliveryPlanData.boxes.flatMap((b) => b.items.map((it) => it.batch_no))
+  );
+  if (assignRows.length !== expected.size)
+    throw new Error("批次归属表与方案不一致,请重新生成方案");
+  const seen = new Set();
+  const batch_assignments = assignRows.map((tr) => {
+    const batch_no = Number(tr.dataset.batch);
+    if (seen.has(batch_no)) throw new Error(`批号 ${batch_no} 重复归属`);
+    seen.add(batch_no);
+    return { batch_no, station_no: Number(tr.querySelector(".as-station").value) };
+  }).sort((a, b) => a.batch_no - b.batch_no);
+  const travel_times = [];
+  for (let i = 0; i <= n; i++) {
+    const row = [];
+    for (let j = 0; j <= n; j++) {
+      if (i === j) { row.push(0); continue; }
+      const inp = $("deliveryMatrix").querySelector(`.dm-cell[data-from="${i}"][data-to="${j}"]`);
+      row.push(nonNegNum(inp.value, `行车时长矩阵第 ${i + 1} 行第 ${j + 1} 列`));
+    }
+    travel_times.push(row);
+  }
+  return {
+    plan_input: JSON.parse(planSnapshot),
+    stations,
+    batch_assignments,
+    travel_times,
+  };
+}
+
+function showDeliveryError(msg) {
+  $("deliveryError").hidden = false;
+  $("deliveryError").textContent = "⚠ " + msg;
+}
+
+async function runDelivery() {
+  $("deliveryError").hidden = true;
+  let payload;
+  try {
+    payload = collectDeliveryPayload();
+  } catch (e) {
+    showDeliveryError(e.message);
+    return;
+  }
+  const btn = $("btnDelivery");
+  btn.disabled = true;
+  btn.textContent = "规划中…";
+  try {
+    const resp = await fetch("/api/delivery-route", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || `站序规划失败(HTTP ${resp.status})`);
+    renderDelivery(data);
+  } catch (e) {
+    /* 无可行站序:明确报错且不展示任何(部分)路线 */
+    $("deliveryResult").innerHTML = "";
+    showDeliveryError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🚚 规划送达站序";
+  }
+}
+
+function renderDelivery(data) {
+  $("deliveryStale").hidden = true;
+  const r = data.route;
+  const sm = data.summary;
+  const seqText = r.station_sequence
+    .map((no) => {
+      const st = data.stations.find((s) => s.station_no === no);
+      return `${no}「${escapeHtml(st.name)}」`;
+    })
+    .join(" → ");
+  const chips = `
+    <span class="assess-chip">最优站序:<strong>${r.station_sequence.join(" → ")}</strong>(仓库出发)</span>
+    <span class="assess-chip chip-ok">最后一站卸毕 <strong>${fmt(r.final_finish_hours)}</strong> h
+      / 方案运输总时长 ${fmt(data.transport_hours)} h</span>
+    <span class="assess-chip">可行站序 ${sm.feasible_permutations} / ${sm.candidate_permutations}</span>
+    <span class="assess-chip muted">行驶 ${fmt(r.total_travel_hours)}h · 等待 ${fmt(r.total_wait_hours)}h · 卸货 ${fmt(r.total_unload_hours)}h</span>
+    <span class="assess-chip muted">快照 ${data.input_fingerprint.slice(0, 8)}</span>`;
+
+  const stopRows = r.stops.map((s) => {
+    const wait = s.wait_hours > 0
+      ? `<span class="seg-badge">等待 ${fmt(s.wait_hours)}h</span>`
+      : '<span class="muted">—</span>';
+    const batchChips = s.batches
+      .map((b) => `#${b.batch_no} ${escapeHtml(b.name)} × ${fmt(b.units)}`)
+      .join("；");
+    const boxLines = s.boxes.map((box) => {
+      const items = box.items
+        .map((it) => `<tr><td>第 ${box.box_no} 箱 · #${it.batch_no} ${escapeHtml(it.name)}</td>
+          <td class="num">${fmt(it.units)} 件</td></tr>`)
+        .join("");
+      return `<table class="items"><tbody>${items}</tbody></table>`;
+    }).join("");
+    return `<div class="delay-box delay-box-ok delivery-stop">
+      <div class="detail-head">
+        <strong>第 ${s.stop_no} 停 · 第 ${s.station_no} 站「${escapeHtml(s.name)}」</strong>
+        <span class="assess-chip">📦 箱号 ${s.box_nos.join("、") || "—"} · 共 ${fmt(s.total_units)} 件</span>
+      </div>
+      <table class="seg-checks">
+        <thead><tr><th>时刻</th><th class="num">抵达</th><th class="num">等待</th>
+          <th class="num">开始卸货</th><th class="num">卸毕</th><th>签收窗口 / 卸货耗时</th></tr></thead>
+        <tbody><tr>
+          <td class="muted">自出库(h)</td>
+          <td class="num">${fmt(s.arrival_hours)}</td>
+          <td class="num">${wait}</td>
+          <td class="num">${fmt(s.unload_start_hours)}</td>
+          <td class="num"><strong>${fmt(s.finish_hours)}</strong></td>
+          <td class="num muted">${fmt(s.window_start)}~${fmt(s.window_end)} · ${fmt(s.unload_hours)}h</td>
+        </tr></tbody>
+      </table>
+      <div class="muted delivery-batches">送达批次:${batchChips || "无(空站)"}</div>
+      ${boxLines}
+    </div>`;
+  }).join("");
+
+  $("deliveryResult").innerHTML = `
+    <div class="assess-meta">${chips}</div>
+    <div class="delay-verdict delay-ok">✓ ${escapeHtml(sm.verdict)}</div>
+    <div class="detail-sub">站序:仓库 → ${seqText}</div>
+    ${stopRows}`;
+}
+
+$("btnDelivery").addEventListener("click", runDelivery);
+
+/* 输入变化:站序规划绑定生成方案时的快照,输入不一致则标记过期并禁用规划按钮 */
+function markDeliveryStale() {
+  if ($("deliveryView").hidden || planSnapshot === null) return;
+  let cur = null;
+  try {
+    cur = JSON.stringify(collectInput());
+  } catch (e) {
+    cur = null;
+  }
+  const stale = cur !== planSnapshot;
+  $("deliveryStale").hidden = !stale;
+  $("deliveryStale").textContent = "⚠ 输入已变化,站序规划结果已过期,请重新生成方案";
+  $("btnDelivery").disabled = stale;
+  if (stale) $("deliveryResult").querySelectorAll("input,button").forEach((el) => (el.disabled = true));
 }
 
 /* ---------------- 初始空行 ---------------- */

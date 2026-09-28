@@ -131,6 +131,60 @@ class DelayRequest(BaseModel):
     )
 
 
+class DeliveryStationIn(BaseModel):
+    name: str | None = Field(
+        None, description="送达站点名称(可选);留空按「站点 N」命名"
+    )
+    window_start: float = Field(
+        ...,
+        description="可签收时间窗开始(小时,以出库时刻为 0,非负);"
+        "服务端再次校验非负有限,非法返回 400",
+    )
+    window_end: float = Field(
+        ...,
+        description="可签收时间窗结束(小时,不得早于开始);"
+        "卸货必须在窗口结束前完成(恰在边界完成允许)",
+    )
+    unload_hours: float = Field(
+        ...,
+        description="该站卸货耗时(小时,非负有限);抵站过早须先等到窗口开始再卸货",
+    )
+
+
+class DeliveryBatchAssignmentIn(BaseModel):
+    batch_no: int = Field(
+        ..., gt=0, description="货物批号(对应规划快照 cargoes 列表序号,1 起)"
+    )
+    station_no: int = Field(
+        ..., gt=0, description="送达站号(对应 stations 列表序号,1 起)"
+    )
+
+
+class DeliveryRequest(BaseModel):
+    plan_input: PlanRequest = Field(
+        ...,
+        description="生成方案时的输入快照(请求体与 /api/plan 相同);"
+        "服务端按快照重新规划并逐箱逐批复核箱号、批次与件数,"
+        "仅在全员可运输方案上规划站序,输入变化后需重新生成方案",
+    )
+    stations: list[DeliveryStationIn] = Field(
+        ...,
+        description="送达站点列表(1~8 个):每站的可签收时间窗与卸货耗时;"
+        "窗口结束不得早于开始,所有时间均为非负有限数",
+    )
+    batch_assignments: list[DeliveryBatchAssignmentIn] = Field(
+        ...,
+        description="每个货物批次恰好一条:批号 batch_no 与送达站号 station_no;"
+        "缺批、重复批号或站号越界均返回 400",
+    )
+    travel_times: list[list[float]] = Field(
+        ...,
+        description="有向行车时长矩阵(小时),(站点数+1) 阶方阵,"
+        "行列顺序均为 仓库、站点1、站点2、…,travel_times[i][j] 为从 i 到 j 的"
+        "有向时长(允许双向不对称);每个单元格均须为非负有限数,对角线不使用",
+    )
+
+
 class HandoverOrderCreate(BaseModel):
     plan_input: PlanRequest = Field(
         ...,

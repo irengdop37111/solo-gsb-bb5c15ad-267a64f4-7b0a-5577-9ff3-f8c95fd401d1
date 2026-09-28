@@ -7,12 +7,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, delay, handover
+from . import db, delay, delivery, handover
 from .planner import plan
 from .resilience import assess_zone_failures
 from .review import review
 from .schemas import (
     DelayRequest,
+    DeliveryRequest,
     HandoverOrderCreate,
     HandoverRecordsSubmit,
     PlanRequest,
@@ -44,11 +45,18 @@ app = FastAPI(
     "以生成方案时的输入快照和已装箱明细为基准,箱号/批次/件数不变,"
     "重新计算延误后总时长、逐段设定点与各批累计度时,逐箱对比原值,"
     "列出超出最长运输时长或度时预算的批次并标出度时首次超限段,"
-    "没有受影响批次时明确返回可继续运输;另支持禁配装箱模式(forbidden_mode):"
+    "没有受影响批次时明确返回可继续运输;"
+    "以及送达站序规划:在全员可运输方案上为每个批次指定送达站点(1~8 个),"
+    "填写各站可签收时间窗、卸货耗时与有向行车时长矩阵(仓库/站点方阵),"
+    "按快照重新核对箱号、批次与件数,穷举全部站序(抵站过早等待、"
+    "卸货须在窗口结束前完成、最后一站卸毕不超过方案运输总时长),"
+    "取最终卸毕最早、并列时站号字典序最小的站序,逐站返回抵达/等待/"
+    "卸毕时刻与箱号、批次、件数,无可行站序时返回 400 且不返回部分路线;"
+    "另支持禁配装箱模式(forbidden_mode):"
     "货物行可填不可同箱的其他批号(当前列表序号,逗号分隔),单向填写视为双方禁配,"
     "启用时总件数限 1~10,精确搜索箱数最少、并列时箱号序列字典序最小的全员方案,"
     "无解返回 400 不返回部分方案;容灾评估、延误推演与交接单均沿用模式与禁配快照",
-    version="1.9.0",
+    version="1.10.0",
     lifespan=lifespan,
 )
 
@@ -113,6 +121,18 @@ async def api_transport_delay(req: DelayRequest) -> dict:
     最长运输时长或度时预算的批次并标出度时首次超限段。输入变化后旧推演
     结果过期,需重新生成方案。"""
     return delay.simulate_delay(req.model_dump())
+
+
+@app.post("/api/delivery-route", tags=["delivery"])
+async def api_delivery_route(req: DeliveryRequest) -> dict:
+    """送达站序规划:请求体携带生成方案时的输入快照(plan_input)、1~8 个站点
+    (可签收时间窗与卸货耗时)、每个批次恰好一条的到站归属,以及 (站点数+1) 阶
+    有向行车时长矩阵(行列顺序:仓库、站点1、…)。按快照重新规划并核对
+    箱号/批次/件数,穷举全部可行站序(过早抵站等待、卸货须在窗口结束前完成、
+    最后一站卸毕不超过方案运输总时长),取最终卸毕最早、并列时按输入站号
+    字典序最小者。输入变化后旧结果过期,需重新生成方案;无可行站序返回 400
+    且不返回部分路线。"""
+    return delivery.plan_delivery(req.model_dump())
 
 
 # ---------------- 到货交接台账 ----------------
