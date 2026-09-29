@@ -1,9 +1,10 @@
 """Pydantic 请求模型(同时用于 /docs 中的接口文档)。"""
 from __future__ import annotations
 
+import math
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ZoneIn(BaseModel):
@@ -129,6 +130,99 @@ class DelayRequest(BaseModel):
         ge=0,
         description="该运输段的新增时长(小时,非负);其余段时长、温区与锁温组不变",
     )
+
+
+class DeliveryStationIn(BaseModel):
+    name: str | None = Field(None, description="站点名称;留空自动按「站点 N」命名")
+    window_start: float = Field(
+        ..., ge=0, allow_inf_nan=False,
+        description="可签收时间窗开始(小时,出库时刻为 0;非负有限值)",
+    )
+    window_end: float = Field(
+        ..., ge=0, allow_inf_nan=False,
+        description="可签收时间窗结束(小时,非负有限值;不得早于窗口开始)",
+    )
+    unload_hours: float = Field(
+        ..., ge=0, allow_inf_nan=False, description="本站卸货耗时(小时,非负有限值)"
+    )
+    from_warehouse: float = Field(
+        ..., ge=0, allow_inf_nan=False,
+        description="从仓库行驶到本站的有向行车时长(小时,非负有限值)",
+    )
+    travel_to: list[float] | None = Field(
+        None,
+        description="可选内嵌方式:从本站到各站(按站点输入顺序,含本站占位)的"
+        "有向行车时长;也可统一使用请求体顶层 travel 矩阵",
+    )
+
+
+class DeliveryAssignmentIn(BaseModel):
+    batch_no: int | None = Field(
+        None,
+        description="批号(按货物输入顺序,1 起);明细按批次顺序给出时可省略,"
+        "省略时取行序号",
+    )
+    station_no: int = Field(
+        ...,
+        gt=0,
+        description="该批次送达的站点输入序号(1 起);全部批次须恰好归属一站",
+    )
+
+
+class DeliveryScheduleRequest(BaseModel):
+    plan_input: PlanRequest = Field(
+        ...,
+        description="生成方案时的输入快照(请求体与 /api/plan 相同);"
+        "服务端按快照重新规划核对箱号/批次/件数,仅接受全员可运输方案,"
+        "输入变化后旧排程结果过期",
+    )
+    stations: list[DeliveryStationIn] = Field(
+        ...,
+        min_length=1,
+        max_length=8,
+        description="送达站点(1~8 个):名称、可签收时间窗、卸货耗时与"
+        "仓库→本站有向行车时长;时间窗、耗时均为非负有限数,结束不早于开始",
+    )
+    travel: list[list[float]] | None = Field(
+        None,
+        description="站点间有向行车时长矩阵(小时),n×n,行=上一站、列=下一站,"
+        "有向不要求对称;对角线(自己→自己)不使用;省略时取各站 travel_to;"
+        "元素均须为非负有限数(形状与非负由业务层校验,非法返回 400)",
+    )
+    assignments: list = Field(
+        ...,
+        min_length=1,
+        description="批次归属(全部批次恰好归属一站):紧凑形式为按批次输入顺序的"
+        "站号整数列表(如 [2,1,2]);明细形式为 "
+        "[{batch_no:1, station_no:2}, ...]",
+    )
+
+    @field_validator("travel")
+    @classmethod
+    def _travel_finite(cls, v):
+        if v is None:
+            return v
+        for i, row in enumerate(v):
+            for j, x in enumerate(row):
+                if isinstance(x, bool):
+                    raise ValueError(
+                        f"行车时长矩阵第 {i + 1} 行第 {j + 1} 列须为数值"
+                    )
+                try:
+                    fx = float(x)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"行车时长矩阵第 {i + 1} 行第 {j + 1} 列须为数值"
+                    ) from None
+                if not math.isfinite(fx):
+                    raise ValueError(
+                        f"站点 {i + 1} → 站点 {j + 1} 的行车时长须为有限数值"
+                    )
+                if fx < 0:
+                    raise ValueError(
+                        f"站点 {i + 1} → 站点 {j + 1} 的行车时长不能为负数"
+                    )
+        return v
 
 
 class HandoverOrderCreate(BaseModel):

@@ -156,6 +156,58 @@
           <div id="delayResult"></div>
           <div id="delayError" class="error-box" hidden></div>
         </div>
+
+        <!-- ============ 送达站点排程 ============ -->
+        <div id="deliveryView" hidden>
+          <h3>送达站点排程
+            <span id="deliveryStale" class="stale-badge" hidden>⚠ 输入已变化,排程结果已过期,请重新生成方案</span>
+          </h3>
+          <div class="muted delivery-hint">
+            为每个货物批次指定 1 个送达站点(1~8 个,每批恰好归属一站),填写各站签收时间窗、卸货耗时及
+            仓库/站点间的<strong>有向</strong>行车时长;出库时刻为 0,抵站过早须等待,卸货须在窗口结束前完成,
+            末站卸毕不得超过方案运输总时长。系统穷举全部可行站序,取最终卸毕最早、并列时站序号字典序最小者。
+          </div>
+          <div class="section-head">
+            <h4 class="handover-sub">站点
+              <small class="muted">窗口开始/结束、卸货耗时、仓库→本站行车时长(小时)</small>
+            </h4>
+            <button id="btnAddStation" type="button" class="btn btn-small">+ 添加站点</button>
+          </div>
+          <div class="table-wrap">
+            <table class="editable delivery-edit">
+              <thead>
+                <tr>
+                  <th>站号</th><th>站点名称</th>
+                  <th>窗口开始 h</th><th>窗口结束 h</th><th>卸货耗时 h</th><th>仓库→本站 h</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="stationRows"></tbody>
+            </table>
+          </div>
+
+          <h4 class="handover-sub">站间有向行车时长(小时)
+            <small class="muted">行 = 上一站,列 = 下一站;有向不要求对称,对角线不使用</small>
+          </h4>
+          <div class="table-wrap">
+            <table class="delivery-matrix" id="travelMatrix"></table>
+          </div>
+
+          <h4 class="handover-sub">批次送达站点
+            <small class="muted">每个批次恰好归属一站;箱号/批次/件数以当前方案快照重新核对</small>
+          </h4>
+          <div class="table-wrap">
+            <table class="editable delivery-edit">
+              <thead>
+                <tr><th>批号</th><th>批次</th><th>方案件数</th><th>送达站点</th></tr>
+              </thead>
+              <tbody id="assignmentRows"></tbody>
+            </table>
+          </div>
+          <button id="btnDelivery" type="button" class="btn btn-small btn-submit-records">🚚 搜索最优站序</button>
+          <div id="deliveryResult"></div>
+          <div id="deliveryError" class="error-box" hidden></div>
+        </div>
       </div>
 
       <!-- ============ 单温区故障容灾评估 ============ -->

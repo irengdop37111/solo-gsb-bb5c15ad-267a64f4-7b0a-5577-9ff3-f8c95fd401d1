@@ -567,6 +567,39 @@ table.review-exc { width: 100%; margin: 8px 0 0; }
 .delay-box .detail-head { padding: 2px 14px 6px; }
 .delay-box table.seg-checks { margin-top: 6px; }
 
+/* ---------- 送达站点排程 ---------- */
+#deliveryView { margin-top: 26px; border-top: 1px dashed var(--line); padding-top: 6px; }
+#deliveryView h3 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.delivery-hint { font-size: 12px; margin: 2px 0 10px; line-height: 1.7; }
+table.delivery-matrix { border-collapse: collapse; margin: 6px 0 4px; }
+table.delivery-matrix th, table.delivery-matrix td {
+  border: 1px solid var(--line);
+  padding: 3px 6px;
+  text-align: center;
+  font-size: 12.5px;
+  min-width: 64px;
+}
+table.delivery-matrix th { background: var(--ice); color: var(--blue-dark); font-weight: 700; }
+table.delivery-matrix td.diag { background: #f1f4f8; color: var(--muted); }
+table.delivery-matrix input { width: 64px; text-align: center; }
+.delivery-stop {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 14px 12px;
+  margin-bottom: 10px;
+  background: #fafcfe;
+}
+.delivery-stop .stop-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.delivery-timeline { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.delivery-timeline .tl-chip {
+  border: 1px solid #cfe0f2;
+  background: #f4f9fe;
+  border-radius: 8px;
+  padding: 3px 10px;
+  font-size: 12.5px;
+}
+.delivery-timeline .tl-chip.wait { border-color: #ecd9a8; background: #fdf7e7; }
+
 /* ---------- 到货交接台账 ---------- */
 #handoverView { margin-top: 26px; border-top: 1px dashed var(--line); padding-top: 6px; }
 #handoverView h3 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

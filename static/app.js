@@ -511,6 +511,13 @@ async function runPlan() {
       delaySnapshot = null;
       $("delayResult").innerHTML = "";
     }
+    if (deliverySnapshot !== null && deliverySnapshot !== newSnapshot) {
+      /* 方案已随输入变化,旧排程结果作废,需按新方案重新排程 */
+      deliverySnapshot = null;
+      deliveryResultFingerprint = null;
+      deliveryAssign = {};
+      $("deliveryResult").innerHTML = "";
+    }
     planSnapshot = newSnapshot;
     planData = data;
     renderResult(data);
@@ -535,6 +542,7 @@ function renderResult(data) {
   renderUnloaded(data.unloaded, data.volume_unit);
   setupReview(data);
   setupDelay(data);
+  setupDelivery(data);
 }
 
 /* 禁配装箱模式横幅:对称化禁配配对 + 箱号按首次出现编号 + 逐件箱号序列 */
@@ -1047,6 +1055,7 @@ function markResultsStale() {
   markAssessmentStale();
   markReviewStale();
   markDelayStale();
+  markDeliveryStale();
 }
 document.querySelector(".input-panel").addEventListener("input", markResultsStale);
 document.querySelector(".input-panel").addEventListener("click", (e) => {
@@ -1623,6 +1632,337 @@ function markDelayStale() {
   $("btnDelay").disabled = stale;
   $("delaySegment").disabled = stale;
   $("delayHours").disabled = stale;
+}
+
+/* ---------------- 送达站点排程 ---------------- */
+/* 排程绑定生成方案时的输入快照;任何输入变化都会把旧结果标记为已过期 */
+let deliverySnapshot = null; // 最近一次排程对应的方案快照
+let deliveryStations = []; // 站点编辑行缓存 [{name, window_start, ...}]
+let deliveryAssign = {}; // {批号: 站号(1 起)},随方案重建
+let deliveryResultFingerprint = null; // 最近一次排程结果指纹(用于标记排程输入变更)
+
+function setupDelivery(data) {
+  const view = $("deliveryView");
+  if (!data.summary.all_loaded || !data.summary.all_transportable) {
+    view.hidden = true;
+    return;
+  }
+  view.hidden = false;
+  rebuildDeliveryForms(data);
+}
+
+/* 以当前方案重建站点表、有向时长矩阵与批次归属表(保留已填站点的非默认值) */
+function rebuildDeliveryForms(data) {
+  const prev = deliveryStations;
+  const n = Math.max(2, prev.length || 2);
+  // 站点数上限 8、下限 1;新增方案首次进入时默认 2 个站
+  deliveryStations = Array.from({ length: n }, (_, i) => prev[i]
+    ? { travel: [], ...prev[i] }
+    : { name: `站点 ${i + 1}`, window_start: "", window_end: "",
+        unload_hours: 1, from_warehouse: "", travel: Array(n).fill(0) });
+  renderStationRows();
+  renderTravelMatrix();
+  renderAssignmentRows(data);
+}
+
+function renderStationRows() {
+  const tbody = $("stationRows");
+  tbody.innerHTML = "";
+  deliveryStations.forEach((s, i) => {
+    const cell = (key, ph) =>
+      `<input data-st="${i}" data-k="${key}" type="number" min="0" step="any" value="${s[key] ?? ""}" placeholder="${ph}" />`;
+    addRow(tbody, [
+      `<strong>${i + 1}</strong>`,
+      `<input data-st="${i}" data-k="name" type="text" value="${escapeHtml(s.name ?? "")}" placeholder="站点名称" />`,
+      cell("window_start", "如 2"),
+      cell("window_end", "如 10"),
+      cell("unload_hours", "如 1"),
+      cell("from_warehouse", "如 2"),
+      '<button type="button" class="btn btn-del btn-del-station">删除</button>',
+    ]);
+  });
+}
+
+function renderTravelMatrix() {
+  const n = deliveryStations.length;
+  const table = $("travelMatrix");
+  let html = "<thead><tr><th>上 \\ 下</th>";
+  for (let j = 0; j < n; j++) html += `<th>${j + 1}</th>`;
+  html += "</tr></thead><tbody>";
+  for (let i = 0; i < n; i++) {
+    html += `<tr><th>${i + 1}</th>`;
+    for (let j = 0; j < n; j++) {
+      if (i === j) {
+        html += '<td class="diag" title="对角线不使用">—</td>';
+      } else {
+        const v = deliveryStations[i].travel?.[j] ?? "";
+        html += `<td><input data-travel-from="${i}" data-travel-to="${j}"
+                 type="number" min="0" step="any" value="${v}" placeholder="0" /></td>`;
+      }
+    }
+    html += "</tr>";
+  }
+  html += "</tbody>";
+  table.innerHTML = html;
+}
+
+function renderAssignmentRows(data) {
+  // 汇总方案各批总件数(同批拆箱合并)
+  const unitsByBatch = new Map();
+  const namesByBatch = new Map();
+  data.boxes.forEach((b) => b.items.forEach((it) => {
+    unitsByBatch.set(it.batch_no, (unitsByBatch.get(it.batch_no) || 0) + it.units);
+    namesByBatch.set(it.batch_no, it.name);
+  }));
+  const tbody = $("assignmentRows");
+  tbody.innerHTML = "";
+  // 沿用上一方案/当前选择;批次不再存在时自然丢弃,新批次默认 1 号站
+  const assign = {};
+  [...unitsByBatch.keys()].sort((a, b) => a - b).forEach((bno) => {
+    const val = Math.min(deliveryAssign[bno] ?? 1, deliveryStations.length);
+    assign[bno] = val;
+    const opts = deliveryStations
+      .map((s, i) => `<option value="${i + 1}"${i + 1 === val ? " selected" : ""}>${i + 1} · ${escapeHtml(s.name)}</option>`)
+      .join("");
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><strong>${bno}</strong></td>
+      <td>${escapeHtml(namesByBatch.get(bno) || `批次 ${bno}`)}</td>
+      <td class="num">${unitsByBatch.get(bno)}</td>
+      <td><select data-assign="${bno}">${opts}</select></td>`;
+    tbody.appendChild(tr);
+  });
+  deliveryAssign = assign;
+}
+
+/* 站点表输入:回写缓存;名称变化时同步归属下拉;编辑后排程输入变更,旧结果标过期 */
+$("stationRows").addEventListener("input", (e) => {
+  const i = Number(e.target.dataset.st);
+  if (Number.isNaN(i)) return;
+  const k = e.target.dataset.k;
+  deliveryStations[i][k] = e.target.value;
+  if (k === "name" && planData) renderAssignmentRows(planData);
+  markDeliveryResultEdited();
+});
+$("stationRows").addEventListener("click", (e) => {
+  if (!e.target.classList.contains("btn-del-station")) return;
+  if (deliveryStations.length <= 1) {
+    showDeliveryError("至少保留 1 个站点");
+    return;
+  }
+  const idx = [...$("stationRows").querySelectorAll("tr")].indexOf(e.target.closest("tr"));
+  deliveryStations.splice(idx, 1);
+  // 归属站号平移:被删站之后的站号减 1,指向被删站的批次重置为 1
+  Object.keys(deliveryAssign).forEach((bno) => {
+    let v = deliveryAssign[bno];
+    if (v === idx + 1) v = 1;
+    else if (v > idx + 1) v -= 1;
+    deliveryAssign[bno] = v;
+  });
+  renderStationRows();
+  renderTravelMatrix();
+  if (planData) renderAssignmentRows(planData);
+  markDeliveryResultEdited();
+});
+$("btnAddStation").addEventListener("click", () => {
+  if (deliveryStations.length >= 8) {
+    showDeliveryError("站点数限 1~8 个");
+    return;
+  }
+  const i = deliveryStations.length;
+  deliveryStations.push({
+    name: `站点 ${i + 1}`, window_start: "", window_end: "", unload_hours: 1,
+    from_warehouse: "", travel: Array(i + 1).fill(0),
+  });
+  renderStationRows();
+  renderTravelMatrix();
+  if (planData) renderAssignmentRows(planData);
+  markDeliveryResultEdited();
+});
+$("travelMatrix").addEventListener("change", (e) => {
+  const from = e.target.dataset.travelFrom;
+  if (from === undefined) return;
+  const i = Number(from);
+  const j = Number(e.target.dataset.travelTo);
+  deliveryStations[i].travel[j] = e.target.value === "" ? 0 : Number(e.target.value);
+  markDeliveryResultEdited();
+});
+$("assignmentRows").addEventListener("change", (e) => {
+  const bno = e.target.dataset.assign;
+  if (bno !== undefined) {
+    deliveryAssign[bno] = Number(e.target.value);
+    markDeliveryResultEdited();
+  }
+});
+
+/* 排程输入自身被编辑后,在结果区提示旧结果已过期(不影响重新搜索) */
+function markDeliveryResultEdited() {
+  if (deliveryResultFingerprint === null) return;
+  $("deliveryStale").hidden = false;
+  $("deliveryStale").textContent = "⚠ 排程输入已变化,显示的是旧结果,请重新搜索";
+  deliveryResultFingerprint = null;
+}
+
+function collectDeliveryInput() {
+  if (!planSnapshot || !planData) throw new Error("请先生成分箱方案");
+  const stations = deliveryStations.map((s) => ({
+    name: String(s.name || "").trim(),
+    window_start: s.window_start === "" ? null : Number(s.window_start),
+    window_end: s.window_end === "" ? null : Number(s.window_end),
+    unload_hours: s.unload_hours === "" ? null : Number(s.unload_hours),
+    from_warehouse: s.from_warehouse === "" ? null : Number(s.from_warehouse),
+  }));
+  const n = stations.length;
+  const isNum = (v) => v !== null && v !== "" && Number.isFinite(Number(v)) && Number(v) >= 0;
+  stations.forEach((s, i) => {
+    if (!isNum(s.window_start)) throw new Error(`站点 ${i + 1}「${s.name}」的窗口开始须为非负数`);
+    if (!isNum(s.window_end)) throw new Error(`站点 ${i + 1}「${s.name}」的窗口结束须为非负数`);
+    if (!isNum(s.unload_hours)) throw new Error(`站点 ${i + 1}「${s.name}」的卸货耗时须为非负数`);
+    if (!isNum(s.from_warehouse)) throw new Error(`站点 ${i + 1}「${s.name}」的仓库→本站行车时长须为非负数`);
+    if (s.window_end < s.window_start) throw new Error(`站点 ${i + 1}「${s.name}」窗口结束早于开始`);
+  });
+  // 矩阵:空值按 0;对角线固定 0
+  const travel = Array.from({ length: n }, (_, i) =>
+    Array.from({ length: n }, (_, j) => {
+      if (i === j) return 0;
+      const raw = deliveryStations[i].travel?.[j];
+      const v = raw === "" || raw === undefined ? 0 : Number(raw);
+      if (!Number.isFinite(v) || v < 0) throw new Error(`站点 ${i + 1} → 站点 ${j + 1} 的行车时长须为非负数`);
+      return v;
+    }));
+  // 归属:按批号升序给出站号
+  const batchNos = Object.keys(deliveryAssign).map(Number).sort((a, b) => a - b);
+  const expectedBatches = new Set();
+  planData.boxes.forEach((b) => b.items.forEach((it) => expectedBatches.add(it.batch_no)));
+  if (batchNos.length !== expectedBatches.size) throw new Error("请为每个批次指定送达站点");
+  const assignments = batchNos.map((bno) => deliveryAssign[bno]);
+  return { stations, travel, assignments };
+}
+
+function showDeliveryError(msg) {
+  $("deliveryError").hidden = false;
+  $("deliveryError").textContent = "⚠ " + msg;
+}
+
+async function runDelivery() {
+  $("deliveryError").hidden = true;
+  let input;
+  try {
+    input = collectDeliveryInput();
+  } catch (e) {
+    showDeliveryError(e.message);
+    return;
+  }
+  const btn = $("btnDelivery");
+  btn.disabled = true;
+  btn.textContent = "搜索中…";
+  try {
+    const resp = await fetch("/api/delivery-schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        plan_input: JSON.parse(planSnapshot),
+        stations: input.stations,
+        travel: input.travel,
+        assignments: input.assignments,
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || `排程失败（HTTP ${resp.status}）`);
+    deliverySnapshot = planSnapshot;
+    deliveryResultFingerprint = data.input_fingerprint;
+    renderDelivery(data);
+  } catch (e) {
+    showDeliveryError(e.message);
+  } finally {
+    // 校验失败时搜索按钮不应被锁死;但若规划输入已变化仍须保持禁用
+    let stale = false;
+    try {
+      stale = JSON.stringify(collectInput()) !== planSnapshot;
+    } catch (_) {
+      stale = false;
+    }
+    btn.disabled = stale;
+    btn.textContent = "🚚 搜索最优站序";
+  }
+}
+
+function renderDelivery(data) {
+  $("deliveryStale").hidden = true;
+  const orderText = data.optimal_order
+    .map((no) => {
+      const st = data.stations.find((s) => s.station_no === no);
+      return `${no}(${escapeHtml(st ? st.name : "")})`;
+    })
+    .join(" → ");
+  const chips = `
+    <span class="assess-chip">最优站序 <strong>${orderText}</strong></span>
+    <span class="assess-chip">末站卸毕 <strong>${fmt(data.final_finish)}</strong> h
+      <small class="muted">/ 运输总时长 ${fmt(data.transport_total_hours)}h,余量 ${fmt(data.time_margin)}h</small></span>
+    <span class="assess-chip muted">搜索 ${data.orders_evaluated} 种站序 · ${data.feasible_order_count} 种可行</span>
+    ${data.forbidden_mode ? '<span class="assess-chip chip-forbidden">🚫 禁配装箱模式(沿用快照)</span>' : ""}
+    <span class="assess-chip muted">快照 ${data.input_fingerprint.slice(0, 8)}</span>`;
+
+  const stops = data.stops.map((s) => {
+    const waitChip = s.wait_hours > 0
+      ? `<span class="tl-chip wait">等待 ${fmt(s.wait_hours)}h(等到 ${fmt(s.unload_start)}h 开窗)</span>`
+      : '<span class="tl-chip">无需等待</span>';
+    const items = s.items
+      .map((it) => `<tr>
+          <td>第 ${it.box_no} 箱</td>
+          <td>#${it.batch_no} ${escapeHtml(it.name)}</td>
+          <td class="num">${fmt(it.units)} 件</td>
+        </tr>`)
+      .join("");
+    return `<div class="delivery-stop">
+      <div class="stop-head">
+        <span class="badge badge-ok">第 ${s.seq} 站</span>
+        <strong>站点 ${s.station_no} · ${escapeHtml(s.name)}</strong>
+        <small class="muted">窗口 [${fmt(s.window_start)}, ${fmt(s.window_end)}]h · 卸货 ${fmt(s.unload_hours)}h</small>
+        <span class="assess-chip">箱号:${s.box_nos.map((b) => `第 ${b} 箱`).join("、")} · 共 ${fmt(s.total_units)} 件</span>
+      </div>
+      <div class="delivery-timeline">
+        <span class="tl-chip">${s.seq === 1 ? "0h 出库" : `${fmt(s.departure_time)}h 自上一站出发`}</span>
+        <span class="tl-chip">行车 ${fmt(s.drive_hours)}h</span>
+        <span class="tl-chip">抵达 <strong>${fmt(s.arrival_time)}</strong> h</span>
+        ${waitChip}
+        <span class="tl-chip">卸货 ${fmt(s.unload_start)} → <strong>${fmt(s.unload_finish)}</strong> h(卸毕)</span>
+      </div>
+      <table class="seg-checks">
+        <thead><tr><th>箱号</th><th>批次</th><th class="num">件数</th></tr></thead>
+        <tbody>${items}</tbody>
+      </table>
+    </div>`;
+  }).join("");
+
+  $("deliveryResult").innerHTML = `
+    <div class="assess-meta">${chips}</div>
+    <div class="delay-verdict delay-ok">✓ ${escapeHtml(data.verdict)}</div>
+    <div class="detail-sub">逐站时刻与送达明细(按最优站序)</div>
+    ${stops}`;
+}
+
+$("btnDelivery").addEventListener("click", runDelivery);
+
+/* 输入变化:排程绑定生成方案时的快照,输入不一致则标记过期并禁用排程 */
+function markDeliveryStale() {
+  if ($("deliveryView").hidden || planSnapshot === null) return;
+  let cur = null;
+  try {
+    cur = JSON.stringify(collectInput());
+  } catch (e) {
+    cur = null;
+  }
+  const stale = cur !== planSnapshot;
+  if (stale) {
+    $("deliveryStale").hidden = false;
+    $("deliveryStale").textContent = "⚠ 输入已变化,排程结果已过期,请重新生成方案";
+  }
+  $("btnDelivery").disabled = stale;
+  $("btnAddStation").disabled = stale;
+  $("stationRows").querySelectorAll("input,button").forEach((el) => { el.disabled = stale; });
+  $("travelMatrix").querySelectorAll("input").forEach((el) => { el.disabled = stale; });
+  $("assignmentRows").querySelectorAll("select").forEach((el) => { el.disabled = stale; });
 }
 
 /* ---------------- 初始空行 ---------------- */

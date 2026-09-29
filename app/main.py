@@ -4,15 +4,18 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, delay, handover
+from . import db, delay, delivery, handover
 from .planner import plan
 from .resilience import assess_zone_failures
 from .review import review
 from .schemas import (
     DelayRequest,
+    DeliveryScheduleRequest,
     HandoverOrderCreate,
     HandoverRecordsSubmit,
     PlanRequest,
@@ -47,8 +50,13 @@ app = FastAPI(
     "没有受影响批次时明确返回可继续运输;另支持禁配装箱模式(forbidden_mode):"
     "货物行可填不可同箱的其他批号(当前列表序号,逗号分隔),单向填写视为双方禁配,"
     "启用时总件数限 1~10,精确搜索箱数最少、并列时箱号序列字典序最小的全员方案,"
-    "无解返回 400 不返回部分方案;容灾评估、延误推演与交接单均沿用模式与禁配快照",
-    version="1.9.0",
+    "无解返回 400 不返回部分方案;容灾评估、延误推演与交接单均沿用模式与禁配快照;"
+    "以及送达站点排程:为每个货物批次指定一个送达站点(1~8 个,每批恰好归属一站),"
+    "填写各站签收时间窗、卸货耗时及仓库/站点间有向行车时长,按快照重新核对"
+    "箱号/批次/件数,穷举全部可行站序(抵站过早等待、卸货须在窗口结束前完成、"
+    "末站卸毕不超过方案运输总时长),取最终卸毕最早、并列时站序号字典序最小者,"
+    "无可行站序返回 400 不返回部分路线",
+    version="1.10.0",
     lifespan=lifespan,
 )
 
@@ -57,6 +65,25 @@ app = FastAPI(
 async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
     """规划器抛出的业务校验错误统一返回 400,消息直接展示给用户。"""
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """请求体校验错误返回 422。
+
+    默认错误体会原样回显输入(如 NaN/Infinity),jsonable_encoder 默认拒绝
+    非有限浮点导致二次序列化失败(会被兜底成 400);这里用自定义编码器把
+    非有限值转成字符串,保证非法输入(含非负有限数校验)稳定返回 422。
+    """
+    return JSONResponse(
+        status_code=422,
+        content={"detail": jsonable_encoder(exc.errors(), custom_encoder={
+            float: lambda x: x if x == x and x not in (float("inf"), float("-inf"))
+            else ("NaN" if x != x else ("Infinity" if x > 0 else "-Infinity")),
+        })},
+    )
 
 
 @app.exception_handler(handover.HandoverNotFound)
@@ -113,6 +140,17 @@ async def api_transport_delay(req: DelayRequest) -> dict:
     最长运输时长或度时预算的批次并标出度时首次超限段。输入变化后旧推演
     结果过期,需重新生成方案。"""
     return delay.simulate_delay(req.model_dump())
+
+
+@app.post("/api/delivery-schedule", tags=["delivery"])
+async def api_delivery_schedule(req: DeliveryScheduleRequest) -> dict:
+    """送达站点排程:请求体携带生成方案时的输入快照(plan_input)、1~8 个站点
+    (签收时间窗、卸货耗时、仓库→站点有向行车时长)、站点间有向行车时长矩阵
+    与每批货物的归属站号(全部批次恰好归属一站)。按快照重新规划核对
+    箱号/批次/件数,穷举全部可行站序,取最终卸毕时刻最早、并列时按输入站点
+    序号组成的站序字典序最小者;无可行站序返回 400,不返回部分路线。
+    输入变化后旧排程结果过期,需重新生成方案。"""
+    return delivery.schedule_delivery(req.model_dump())
 
 
 # ---------------- 到货交接台账 ----------------
